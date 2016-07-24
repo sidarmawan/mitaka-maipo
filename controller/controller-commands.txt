@@ -1,0 +1,549 @@
+########## Environment ##########
+
+### Firewall ###
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+
+### Host Networking ###
+[ ! -f /etc/hosts.orig ] && cp -v /etc/hosts /etc/hosts.orig
+echo "10.2.2.10 controller" >> /etc/hosts
+echo "10.2.2.11 compute" >> /etc/hosts
+echo "10.2.2.12 block" >> /etc/hosts
+echo "10.2.2.13 object0" >> /etc/hosts
+echo "10.2.2.14 object1" >> /etc/hosts
+
+### NTP ###
+yum -y install chrony
+systemctl enable chronyd.service
+systemctl start chronyd.service
+chronyc sources
+timedatectl set-timezone Asia/Jakarta
+timedatectl set-ntp true
+
+### Repo & Packages ###
+yum -y update
+yum -y install python-openstackclient openstack-selinux
+reboot
+
+### MariaDB ###
+yum -y install mariadb mariadb-server python2-PyMySQL
+curl -o /etc/my.cnf.d/openstack.cnf http://10.2.2.250/training/osa1/pod1/controller/etc/my.cnf.d/openstack.cnf
+systemctl enable mariadb.service
+systemctl start mariadb.service
+mysql -uroot -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('RAHASIA');"
+mysql -uroot -pRAHASIA -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+mysql -uroot -pRAHASIA -e "DELETE FROM mysql.user WHERE User='';"
+mysql -uroot -pRAHASIA -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';"
+mysql -uroot -pRAHASIA -e "FLUSH PRIVILEGES;"
+
+### MongoDB ###
+yum -y install mongodb-server mongodb
+[ ! -f /etc/mongod.conf.orig ] && cp -v /etc/mongod.conf /etc/mongod.conf.orig
+curl -o /etc/mongod.conf http://10.2.2.250/training/osa1/pod1/controller/etc/mongod.conf
+systemctl enable mongod.service
+systemctl start mongod.service
+
+### RabbitMQ ###
+yum -y install rabbitmq-server
+systemctl enable rabbitmq-server.service
+systemctl start rabbitmq-server.service
+rabbitmqctl add_user openstack RAHASIA
+rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+
+### Memcached ###
+yum -y install memcached python-memcached
+systemctl enable memcached.service
+systemctl start memcached.service
+
+
+########## Keystone ##########
+
+### Keystone DB & Configurations ###
+mysql -uroot -pRAHASIA -e "CREATE DATABASE keystone;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY 'RAHASIA';"
+yum -y install openstack-keystone httpd mod_wsgi
+[ ! -f /etc/keystone/keystone.conf.orig ] && cp -v /etc/keystone/keystone.conf /etc/keystone/keystone.conf.orig
+curl -o /etc/keystone/keystone.conf http://10.2.2.250/training/osa1/pod1/controller/etc/keystone/keystone.conf
+su -s /bin/sh -c "keystone-manage db_sync" keystone
+keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+[ ! -f /etc/httpd/conf/httpd.conf.orig ] && cp -v /etc/httpd/conf/httpd.conf /etc/httpd/conf/httpd.conf.orig
+curl -o /etc/httpd/conf/httpd.conf http://10.2.2.250/training/osa1/pod1/controller/etc/httpd/conf/httpd.conf
+curl -o /etc/httpd/conf.d/wsgi-keystone.conf http://10.2.2.250/training/osa1/pod1/controller/etc/httpd/conf.d/wsgi-keystone.conf
+systemctl enable httpd.service
+systemctl start httpd.service
+
+### Service Entity & API Endpoints ###
+export OS_TOKEN=d99796a5212e81d7d4e1
+export OS_URL=http://controller:35357/v3
+export OS_IDENTITY_API_VERSION=3
+openstack service create --name keystone --description "OpenStack Identity" identity
+openstack endpoint create --region RegionOne identity public http://controller:5000/v3
+openstack endpoint create --region RegionOne identity internal http://controller:5000/v3
+openstack endpoint create --region RegionOne identity admin http://controller:35357/v3
+
+### Domain, Projects, Users, Roles ###
+openstack domain create --description "Default Domain" default
+openstack project create --domain default --description "Admin Project" admin
+openstack user create --domain default --password RAHASIA admin
+openstack role create admin
+openstack role add --project admin --user admin admin
+openstack project create --domain default --description "Service Project" service
+openstack role create user
+[ ! -f /etc/keystone/keystone-paste.ini.orig ] && cp -v /etc/keystone/keystone-paste.ini /etc/keystone/keystone-paste.ini.orig
+curl -o /etc/keystone/keystone-paste.ini http://10.2.2.250/training/osa1/pod1/controller/etc/keystone/keystone-paste.ini
+unset OS_TOKEN OS_URL
+curl -o /root/admin-openrc http://10.2.2.250/training/osa1/pod1/controller/root/admin-openrc
+. /root/admin-openrc
+openstack token issue
+
+########## Glance ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE glance;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA glance
+openstack role add --project service --user glance admin
+openstack service create --name glance --description "OpenStack Image" image
+openstack endpoint create --region RegionOne image public http://controller:9292
+openstack endpoint create --region RegionOne image internal http://controller:9292
+openstack endpoint create --region RegionOne image admin http://controller:9292
+yum -y install openstack-glance
+[ ! -f /etc/glance/glance-api.conf.orig ] && cp -v /etc/glance/glance-api.conf /etc/glance/glance-api.conf.orig
+curl -o /etc/glance/glance-api.conf http://10.2.2.250/training/osa1/pod1/controller/etc/glance/glance-api.conf
+[ ! -f /etc/glance/glance-registry.conf.orig ] && cp -v /etc/glance/glance-registry.conf /etc/glance/glance-registry.conf.orig
+curl -o /etc/glance/glance-registry.conf http://10.2.2.250/training/osa1/pod1/controller/etc/glance/glance-registry.conf
+su -s /bin/sh -c "glance-manage db_sync" glance
+systemctl enable openstack-glance-api.service openstack-glance-registry.service
+systemctl start openstack-glance-api.service openstack-glance-registry.service
+. /root/admin-openrc
+openstack image list
+glance image-list
+
+
+########## Nova ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE nova_api;"
+mysql -uroot -pRAHASIA -e "CREATE DATABASE nova;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA nova
+openstack role add --project service --user nova admin
+openstack service create --name nova --description "OpenStack Compute" compute
+openstack endpoint create --region RegionOne compute public http://controller:8774/v2.1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne compute internal http://controller:8774/v2.1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne compute admin http://controller:8774/v2.1/%\(tenant_id\)s
+yum -y install openstack-nova-api openstack-nova-conductor openstack-nova-console openstack-nova-novncproxy openstack-nova-scheduler
+[ ! -f /etc/nova/nova.conf.orig ] && cp -v /etc/nova/nova.conf /etc/nova/nova.conf.orig
+curl -o /etc/nova/nova.conf http://10.2.2.250/training/osa1/pod1/controller/etc/nova/nova.conf
+su -s /bin/sh -c "nova-manage api_db sync" nova
+su -s /bin/sh -c "nova-manage db sync" nova
+systemctl enable openstack-nova-api.service openstack-nova-consoleauth.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service
+systemctl start openstack-nova-api.service openstack-nova-consoleauth.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service
+. /root/admin-openrc
+openstack compute service list
+
+#############################################################
+########## Lanjut Konfigurasi Nova di Node Compute ############
+#############################################################
+
+
+########## Neutron ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE neutron;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA neutron
+openstack role add --project service --user neutron admin
+openstack service create --name neutron --description "OpenStack Networking" network
+openstack endpoint create --region RegionOne network public http://controller:9696
+openstack endpoint create --region RegionOne network internal http://controller:9696
+openstack endpoint create --region RegionOne network admin http://controller:9696
+yum -y install openstack-neutron openstack-neutron-ml2 openstack-neutron-linuxbridge ebtables
+[ ! -f /etc/neutron/neutron.conf.orig ] && cp -v /etc/neutron/neutron.conf /etc/neutron/neutron.conf.orig
+curl -o /etc/neutron/neutron.conf http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/neutron.conf
+[ ! -f /etc/neutron/plugins/ml2/ml2_conf.ini.orig ] && cp -v /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugins/ml2/ml2_conf.ini.orig
+curl -o /etc/neutron/plugins/ml2/ml2_conf.ini http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/plugins/ml2/ml2_conf.ini
+[ ! -f /etc/neutron/plugins/ml2/linuxbridge_agent.ini.orig ] && cp -v /etc/neutron/plugins/ml2/linuxbridge_agent.ini /etc/neutron/plugins/ml2/linuxbridge_agent.ini.orig
+curl -o /etc/neutron/plugins/ml2/linuxbridge_agent.ini http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/plugins/ml2/linuxbridge_agent.ini
+[ ! -f /etc/neutron/l3_agent.ini.orig ] && cp -v /etc/neutron/l3_agent.ini /etc/neutron/l3_agent.ini.orig
+curl -o /etc/neutron/l3_agent.ini http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/l3_agent.ini
+[ ! -f /etc/neutron/dhcp_agent.ini.orig ] && cp -v /etc/neutron/dhcp_agent.ini /etc/neutron/dhcp_agent.ini.orig
+curl -o /etc/neutron/dhcp_agent.ini http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/dhcp_agent.ini
+[ ! -f /etc/neutron/metadata_agent.ini.orig ] && cp -v /etc/neutron/metadata_agent.ini /etc/neutron/metadata_agent.ini.orig
+curl -o /etc/neutron/metadata_agent.ini http://10.2.2.250/training/osa1/pod1/controller/etc/neutron/metadata_agent.ini
+ln -s /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
+su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron
+systemctl enable neutron-server.service neutron-linuxbridge-agent.service neutron-dhcp-agent.service neutron-metadata-agent.service neutron-l3-agent.service
+systemctl start neutron-server.service neutron-linuxbridge-agent.service neutron-dhcp-agent.service neutron-metadata-agent.service neutron-l3-agent.service
+. /root/admin-openrc
+neutron ext-list
+neutron agent-list
+
+################################################################
+########## Lanjut Konfigurasi Neutron di Node Compute ############
+################################################################
+
+
+########## Horizon ##########
+yum -y install openstack-dashboard
+[ ! -f /etc/openstack-dashboard/local_settings.orig ] && cp -v /etc/openstack-dashboard/local_settings /etc/openstack-dashboard/local_settings.orig
+curl -o  /etc/openstack-dashboard/local_settings http://10.2.2.250/training/osa1/pod1/controller/etc/openstack-dashboard/local_settings
+systemctl restart httpd.service memcached.service
+
+###################################################################################
+########## Akses Horizon dengan Web Browser: http://10.2.2.10/dashboard/ ############
+###################################################################################
+
+
+########## Launch Instance Lewat Horizon ##########
+
+### Menu Admin - System ###
+
+1. Membuat network public
+Name: net-public
+Project: admin
+Provider Network Type: Flat
+Physical Network: public
+Admin State: Up
+Shared: Yes
+External Network: Yes
+
+2. Membuat subnet public
+Subnet Name: subnet-public
+Network Address: 172.16.2.0/24
+IP Version: IPv4
+Gateway IP: 172.16.2.254
+Enable DHCP: Yes
+Allocation Pools: 172.16.2.100,172.16.2.199
+DNS Name Servers: 10.2.2.254
+
+### Menu Project - Network ###
+
+3. Membuat network private
+Name: net-private
+Admin State: Up
+Shared: No
+Create Subnet: Yes
+
+4. Membuat subnet private
+Subnet Name: subnet-private
+Network Address: 192.168.2.0/24
+IP Version: IPv4
+Gateway IP: 192.168.2.254
+Enable DHCP: Yes
+Allocation Pools: 192.168.2.100,192.168.2.199
+DNS Name Servers: 10.2.2.254
+
+5. Membuat router
+Router Name: router0
+Admin State: Up
+External Network: net-public
+Add interface
+Subnet: subnet-private
+
+### Menu Project - Compute ###
+
+6. Unggah Image cirros
+Name: cirros
+Image Source: Image Location
+Image Location: http://10.2.2.250/distro/cirros/cirros-0.3.4-x86_64-disk.img
+Format: QCOW2
+
+7. Create/Import Key Pair
+Key Pair Name: key-admin
+
+8. Launch Instance
+Instance Name: instance0
+Source Image: cirros
+Flavor: m1.tiny
+Network: net-private
+Key Pair: key-admin
+Akses console dan ping ke 172.16.2.254
+
+9. Floating IP
+Access & Security > Floating IPs > Allocate IP To Project > Allocate IP
+Instances > Associate Floating IP > Associate
+
+10. Security Group
+Allow SSH & ICMP
+Ping dari host ke alamat IP float instance0 (172.16.2.1XX)
+SSH dari host ke alamat IP float instance0 (172.16.2.1XX)
+
+
+########## Heat ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE heat;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON heat.* TO 'heat'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON heat.* TO 'heat'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA heat
+openstack role add --project service --user heat admin
+openstack service create --name heat --description "Orchestration" orchestration
+openstack service create --name heat-cfn --description "Orchestration"  cloudformation
+openstack endpoint create --region RegionOne orchestration public http://controller:8004/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne orchestration internal http://controller:8004/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne orchestration admin http://controller:8004/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne cloudformation public http://controller:8000/v1
+openstack endpoint create --region RegionOne cloudformation internal http://controller:8000/v1
+openstack endpoint create --region RegionOne cloudformation admin http://controller:8000/v1
+openstack domain create --description "Stack projects and users" heat
+openstack user create --domain heat --password RAHASIA heat_domain_admin
+openstack role add --domain heat --user-domain heat --user heat_domain_admin admin
+openstack role create heat_stack_owner
+openstack role add --project admin --user admin heat_stack_owner
+openstack role create heat_stack_user
+yum -y install openstack-heat-api openstack-heat-api-cfn openstack-heat-engine
+[ ! -f /etc/heat/heat.conf.orig ] && cp -v /etc/heat/heat.conf /etc/heat/heat.conf.orig
+curl -o /etc/heat/heat.conf http://10.2.2.250/training/osa1/pod1/controller/etc/heat/heat.conf
+su -s /bin/sh -c "heat-manage db_sync" heat
+systemctl enable openstack-heat-api.service openstack-heat-api-cfn.service openstack-heat-engine.service
+systemctl start openstack-heat-api.service openstack-heat-api-cfn.service openstack-heat-engine.service
+. /root/admin-openrc
+openstack orchestration service list
+
+curl -o /root/admin-template.yml http://10.2.2.250/training/osa1/pod1/controller/root/admin-template.yml
+cat /root/admin-template.yml
+openstack network list
+export NET_ID=$(openstack network list | awk '/ net-public / { print $2 }')
+openstack stack create -t admin-template.yml --parameter "NetID=$NET_ID" stack0
+openstack stack list
+openstack stack output show --all stack0
+openstack server list
+openstack stack delete --yes stack0
+openstack stack list
+openstack stack output show --all stack0
+openstack server list
+
+
+########## Ceilometer ##########
+mongo --host controller --eval 'db = db.getSiblingDB("ceilometer"); db.createUser({user: "ceilometer", pwd: "RAHASIA", roles: [ "readWrite", "dbAdmin" ]})'
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA ceilometer
+openstack role add --project service --user ceilometer admin
+openstack service create --name ceilometer --description "Telemetry" metering
+openstack endpoint create --region RegionOne metering public http://controller:8777
+openstack endpoint create --region RegionOne metering internal http://controller:8777
+openstack endpoint create --region RegionOne metering admin http://controller:8777
+yum -y install openstack-ceilometer-api openstack-ceilometer-collector openstack-ceilometer-notification openstack-ceilometer-central python-ceilometerclient
+[ ! -f /etc/ceilometer/ceilometer.conf.orig ] && cp -v /etc/ceilometer/ceilometer.conf /etc/ceilometer/ceilometer.conf.orig
+curl -o /etc/ceilometer/ceilometer.conf http://10.2.2.250/training/osa1/pod1/controller/etc/ceilometer/ceilometer.conf
+systemctl enable openstack-ceilometer-api.service openstack-ceilometer-notification.service openstack-ceilometer-central.service openstack-ceilometer-collector.service
+systemctl start openstack-ceilometer-api.service openstack-ceilometer-notification.service openstack-ceilometer-central.service openstack-ceilometer-collector.service
+. /root/admin-openrc
+ceilometer meter-list
+IMAGE_ID=$(glance image-list | grep 'cirros' | awk '{ print $2 }')
+glance image-download $IMAGE_ID > /tmp/cirros.img
+ceilometer meter-list
+ceilometer statistics -m image.download -p 60
+rm /tmp/cirros.img
+
+###################################################################
+########## Lanjut Konfigurasi Ceilometer di Node Compute ############
+###################################################################
+
+### aodh ###
+mysql -uroot -pRAHASIA -e "CREATE DATABASE aodh;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON aodh.* TO 'aodh'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON aodh.* TO 'aodh'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA aodh
+openstack role add --project service --user aodh admin
+openstack service create --name aodh --description "Telemetry" alarming
+openstack endpoint create --region RegionOne alarming public http://controller:8042
+openstack endpoint create --region RegionOne alarming internal http://controller:8042
+openstack endpoint create --region RegionOne alarming admin http://controller:8042
+yum -y install openstack-aodh-api openstack-aodh-evaluator openstack-aodh-notifier openstack-aodh-listener openstack-aodh-expirer python-ceilometerclient
+[ ! -f /etc/aodh/aodh.conf.orig ] && cp -v /etc/aodh/aodh.conf /etc/aodh/aodh.conf.orig
+curl -o /etc/aodh/aodh.conf http://10.2.2.250/training/osa1/pod1/controller/etc/aodh/aodh.conf
+su -s /bin/sh -c "aodh-dbsync" aodh
+systemctl enable openstack-aodh-api.service openstack-aodh-evaluator.service openstack-aodh-notifier.service openstack-aodh-listener.service
+systemctl start openstack-aodh-api.service openstack-aodh-evaluator.service openstack-aodh-notifier.service openstack-aodh-listener.service
+ceilometer -d alarm-event-create --name event_alarm1 --alarm-action 'log://' --event-type image.download  -q 'traits.name=string::cirros'
+ceilometer alarm-list
+IMAGE_ID=$(glance image-list | grep 'cirros' | awk '{ print $2 }')
+glance image-download $IMAGE_ID > /tmp/cirros.img
+tail /var/log/aodh/notifier.log
+
+
+########## Cinder ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE cinder;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON cinder.* TO 'cinder'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA cinder
+openstack role add --project service --user cinder admin
+openstack service create --name cinder --description "OpenStack Block Storage" volume
+openstack service create --name cinderv2 --description "OpenStack Block Storage" volumev2
+openstack endpoint create --region RegionOne volume public http://controller:8776/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne volume internal http://controller:8776/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne volume admin http://controller:8776/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne volumev2 public http://controller:8776/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne volumev2 internal http://controller:8776/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne volumev2 admin http://controller:8776/v2/%\(tenant_id\)s
+yum -y install openstack-cinder
+[ ! -f /etc/cinder/cinder.conf.orig ] && cp -v /etc/cinder/cinder.conf /etc/cinder/cinder.conf.orig
+curl -o /etc/cinder/cinder.conf http://10.2.2.250/training/osa1/pod1/controller/etc/cinder/cinder.conf
+su -s /bin/sh -c "cinder-manage db sync" cinder
+systemctl enable openstack-cinder-api.service openstack-cinder-scheduler.service
+systemctl start openstack-cinder-api.service openstack-cinder-scheduler.service
+. /root/admin-openrc
+cinder service-list
+
+#############################################################
+########## Lanjut Konfigurasi Cinder di Node Block ############
+#############################################################
+
+
+########## Manila ##########
+mysql -uroot -pRAHASIA -e "CREATE DATABASE manila;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON manila.* TO 'manila'@'localhost' IDENTIFIED BY 'RAHASIA';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON manila.* TO 'manila'@'%' IDENTIFIED BY 'RAHASIA';"
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA manila
+openstack role add --project service --user manila admin
+openstack service create --name manila --description "OpenStack Shared File Systems" share
+openstack service create --name manilav2 --description "OpenStack Shared File Systems" sharev2
+openstack endpoint create --region RegionOne share public http://controller:8786/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne share internal http://controller:8786/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne share admin http://controller:8786/v1/%\(tenant_id\)s
+openstack endpoint create --region RegionOne sharev2 public http://controller:8786/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne sharev2 internal http://controller:8786/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne sharev2 admin http://controller:8786/v2/%\(tenant_id\)s
+yum -y install openstack-manila python-manilaclient
+[ ! -f /etc/manila/manila.conf.orig ] && cp -v /etc/manila/manila.conf /etc/manila/manila.conf.orig
+curl -o /etc/manila/manila.conf http://10.2.2.250/training/osa1/pod1/controller/etc/manila/manila.conf
+su -s /bin/sh -c "manila-manage db sync" manila
+systemctl enable openstack-manila-api.service openstack-manila-scheduler.service
+systemctl start openstack-manila-api.service openstack-manila-scheduler.service
+
+#############################################################
+########## Lanjut Konfigurasi Manila di Node Block ############
+#############################################################
+
+. /root/admin-openrc
+manila service-list
+wget http://10.2.2.250/distro/manila/manila-service-image-master.qcow2
+openstack image create "manila-service-image" --file manila-service-image-master.qcow2 --disk-format qcow2 --container-format bare --public
+openstack flavor create manila-service-flavor --id 100 --ram 256 --disk 0 --vcpus 1
+neutron net-list
+export PRIVATE_NET_ID=$(openstack network list | awk '/ net-private / { print $2 }')
+openstack server create --flavor manila-service-flavor --image manila-service-image --nic net-id=$PRIVATE_NET_ID --security-group default manila
+openstack ip floating create net-public
+openstack ip floating add 172.16.2.1XX manila
+manila type-create default_share_type False
+manila create NFS 1 --name share0
+manila list
+manila show share0
+manila access-allow share0 ip 172.16.2.1XX
+
+---Akses Ke Instance manila---
+mkdir ~/test_folder
+sudo mount -t nfs 10.2.2.12:/var/lib/manila/mnt/share-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX ~/test_folder
+
+
+########## Swift ##########
+ssh-keygen
+
+ssh-copy-id -i ~/.ssh/id_rsa.pub 10.2.2.13
+
+ssh-copy-id -i ~/.ssh/id_rsa.pub 10.2.2.14
+
+. /root/admin-openrc
+openstack user create --domain default --password RAHASIA swift
+openstack role add --project service --user swift admin
+openstack service create --name swift --description "OpenStack Object Storage" object-store
+openstack endpoint create --region RegionOne object-store public http://controller:8080/v1/AUTH_%\(tenant_id\)s
+openstack endpoint create --region RegionOne object-store internal http://controller:8080/v1/AUTH_%\(tenant_id\)s
+openstack endpoint create --region RegionOne object-store admin http://controller:8080/v1
+yum -y install openstack-swift-proxy python-swiftclient python-keystoneclient python-keystonemiddleware memcached
+[ ! -f /etc/swift/proxy-server.conf.orig ] && cp -v /etc/swift/proxy-server.conf /etc/swift/proxy-server.conf.orig
+curl -o /etc/swift/proxy-server.conf http://10.2.2.250/training/osa1/pod1/controller/etc/swift/proxy-server.conf
+
+########################################################################
+########## Lanjut Konfigurasi Swift di Node object1 & object2 ############
+########################################################################
+
+cd /etc/swift
+swift-ring-builder account.builder create 10 3 1
+swift-ring-builder account.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6002 --device vdb --weight 100
+swift-ring-builder account.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6002 --device vdc --weight 100
+swift-ring-builder account.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6002 --device vdb --weight 100
+swift-ring-builder account.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6002 --device vdc --weight 100
+swift-ring-builder account.builder
+swift-ring-builder account.builder rebalance
+swift-ring-builder container.builder create 10 3 1
+swift-ring-builder container.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6001 --device vdb --weight 100
+swift-ring-builder container.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6001 --device vdc --weight 100
+swift-ring-builder container.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6001 --device vdb --weight 100
+swift-ring-builder container.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6001 --device vdc --weight 100
+swift-ring-builder container.builder
+swift-ring-builder container.builder rebalance
+swift-ring-builder object.builder create 10 3 1
+swift-ring-builder object.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6000 --device vdb --weight 100
+swift-ring-builder object.builder add --region 1 --zone 1 --ip 10.2.2.13 --port 6000 --device vdc --weight 100
+swift-ring-builder object.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6000 --device vdb --weight 100
+swift-ring-builder object.builder add --region 1 --zone 2 --ip 10.2.2.14 --port 6000 --device vdc --weight 100
+swift-ring-builder object.builder
+swift-ring-builder object.builder rebalance
+cd ~
+scp /etc/swift/*.gz 10.2.2.13:/etc/swift/
+scp /etc/swift/*.gz 10.2.2.14:/etc/swift/
+[ ! -f /etc/swift/swift.conf.orig ] && cp -v /etc/swift/swift.conf /etc/swift/swift.conf.orig
+curl -o /etc/swift/swift.conf http://10.2.2.250/training/osa1/pod1/controller/etc/swift/swift.conf
+scp /etc/swift/swift.conf 10.2.2.13:/etc/swift/swift.conf
+scp /etc/swift/swift.conf 10.2.2.14:/etc/swift/swift.conf
+chown -R root:swift /etc/swift
+ssh -l root 10.2.2.13 "chown -R root:swift /etc/swift"
+ssh -l root 10.2.2.14 "chown -R root:swift /etc/swift"
+systemctl enable openstack-swift-proxy.service memcached.service
+systemctl start openstack-swift-proxy.service memcached.service
+ssh -l root 10.2.2.13 "systemctl enable openstack-swift-account.service openstack-swift-account-auditor.service openstack-swift-account-reaper.service openstack-swift-account-replicator.service"
+ssh -l root 10.2.2.13 "systemctl start openstack-swift-account.service openstack-swift-account-auditor.service openstack-swift-account-reaper.service openstack-swift-account-replicator.service"
+ssh -l root 10.2.2.13 "systemctl enable openstack-swift-container.service openstack-swift-container-auditor.service openstack-swift-container-replicator.service openstack-swift-container-updater.service"
+ssh -l root 10.2.2.13 "systemctl start openstack-swift-container.service openstack-swift-container-auditor.service openstack-swift-container-replicator.service openstack-swift-container-updater.service"
+ssh -l root 10.2.2.13 "systemctl enable openstack-swift-object.service openstack-swift-object-auditor.service openstack-swift-object-replicator.service openstack-swift-object-updater.service"
+ssh -l root 10.2.2.13 "systemctl start openstack-swift-object.service openstack-swift-object-auditor.service openstack-swift-object-replicator.service openstack-swift-object-updater.service"
+ssh -l root 10.2.2.14 "systemctl enable openstack-swift-account.service openstack-swift-account-auditor.service openstack-swift-account-reaper.service openstack-swift-account-replicator.service"
+ssh -l root 10.2.2.14 "systemctl start openstack-swift-account.service openstack-swift-account-auditor.service openstack-swift-account-reaper.service openstack-swift-account-replicator.service"
+ssh -l root 10.2.2.14 "systemctl enable openstack-swift-container.service openstack-swift-container-auditor.service openstack-swift-container-replicator.service openstack-swift-container-updater.service"
+ssh -l root 10.2.2.14 "systemctl start openstack-swift-container.service openstack-swift-container-auditor.service openstack-swift-container-replicator.service openstack-swift-container-updater.service"
+ssh -l root 10.2.2.14 "systemctl enable openstack-swift-object.service openstack-swift-object-auditor.service openstack-swift-object-replicator.service openstack-swift-object-updater.service"
+ssh -l root 10.2.2.14 "systemctl start openstack-swift-object.service openstack-swift-object-auditor.service openstack-swift-object-replicator.service openstack-swift-object-updater.service"
+. /root/admin-openrc
+swift stat
+openstack container create container0
+echo "test" > file0
+openstack object create container0 file0
+openstack object list container0
+rm -rf file0
+ls -lh file0
+openstack object save container0 file0
+ls -lh file0
+cat file0
+
+##### Swift as a Glance Backend Store #####
+1. Tampilkan daftar image
+glance image-list
+ls -lh /var/lib/glance/images/
+
+2. Hapus semua image
+glance image-delete IMAGE-ID
+glance image-list
+
+3. Unduh konfigurasi glance-api
+curl -o /etc/glance/glance-api.conf http://10.2.2.250/training/osa1/pod1/controller/etc/glance/glance-api.conf.swift
+
+4. Restart service glance-api
+systemctl restart openstack-glance-api.service
+systemctl status openstack-glance-api.service
+
+5. Upload Image
+curl -o cirros-0.3.4-x86_64-disk.img http://10.2.2.250/distro/cirros/cirros-0.3.4-x86_64-disk.img
+glance image-create --name "cirros" --file cirros-0.3.4-x86_64-disk.img --disk-format qcow2 --container-format bare --visibility public --progress
+
+6. Tampilkan daftar image
+glance image-list
+ls -lh /var/lib/glance/images/
+

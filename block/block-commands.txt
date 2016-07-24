@@ -1,0 +1,70 @@
+  ######################################################
+############ Tambahkan 2 Harddisk (vdb & vdc) ##########
+  ######################################################
+
+########## Environment ##########
+
+### Firewall ###
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+
+### Host Networking ###
+[ ! -f /etc/hosts.orig ] && cp -v /etc/hosts /etc/hosts.orig
+echo "10.2.2.10 controller" >> /etc/hosts
+echo "10.2.2.11 compute" >> /etc/hosts
+echo "10.2.2.12 block" >> /etc/hosts
+echo "10.2.2.13 object0" >> /etc/hosts
+echo "10.2.2.14 object1" >> /etc/hosts
+
+### NTP ###
+yum -y install chrony
+systemctl enable chronyd.service
+systemctl start chronyd.service
+chronyc sources
+timedatectl set-timezone Asia/Jakarta
+timedatectl set-ntp true
+
+### Repo & Packages ###
+yum -y update
+yum -y install python-openstackclient openstack-selinux
+reboot
+
+
+  ####################################################################
+############ Eksekusi Konfigurasi Cinder di Node Controller ##########
+  ####################################################################
+
+########## Cinder ##########
+yum -y install lvm2
+systemctl enable lvm2-lvmetad.service
+systemctl start lvm2-lvmetad.service
+pvcreate /dev/vdb
+vgcreate cinder-volumes /dev/vdb
+[ ! -f /etc/lvm/lvm.conf.orig ] && cp -v /etc/lvm/lvm.conf /etc/lvm/lvm.conf.orig
+curl -o /etc/lvm/lvm.conf http://10.2.2.250/training/osa1/pod1/block/etc/lvm/lvm.conf
+yum -y install openstack-cinder targetcli python-keystonemiddleware.noarch
+[ ! -f /etc/cinder/cinder.conf.orig ] && cp -v /etc/cinder/cinder.conf /etc/cinder/cinder.conf.orig
+curl -o /etc/cinder/cinder.conf http://10.2.2.250/training/osa1/pod1/block/etc/cinder/cinder.conf
+systemctl enable openstack-cinder-volume.service target.service
+systemctl start openstack-cinder-volume.service target.service
+curl -o /root/admin-openrc http://10.2.2.250/training/osa1/pod1/controller/root/admin-openrc
+. /root/admin-openrc
+cinder service-list
+
+
+########## Manila ##########
+yum -y install openstack-manila-share python2-PyMySQL
+[ ! -f /etc/manila/manila.conf.orig ] && cp -v /etc/manila/manila.conf /etc/manila/manila.conf.orig
+curl -o /etc/manila/manila.conf http://10.2.2.250/training/osa1/pod1/block/etc/manila/manila.conf
+yum -y install lvm2 nfs-utils nfs4-acl-tools portmap nfs-ganesha
+ln -s /usr/lib/systemd/system/nfs-ganesha.service /usr/lib/systemd/system/nfs-kernel-server.service
+systemctl enable lvm2-lvmetad.service nfs-kernel-server.service
+systemctl start lvm2-lvmetad.service nfs-kernel-server.service
+pvcreate /dev/vdc
+vgcreate manila-volumes /dev/vdc
+systemctl enable openstack-manila-share.service
+systemctl start openstack-manila-share.service
+
+  ##########################################################
+############ Verifikasi Manila di Node Controller ##########
+  ##########################################################

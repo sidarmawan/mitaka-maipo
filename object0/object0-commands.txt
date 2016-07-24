@@ -1,0 +1,62 @@
+  ######################################################
+############ Tambahkan 2 Harddisk (vdb & vdc) ##########
+  ######################################################
+
+########## Environment ##########
+
+### Firewall ###
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+
+### Host Networking ###
+[ ! -f /etc/hosts.orig ] && cp -v /etc/hosts /etc/hosts.orig
+echo "10.2.2.10 controller" >> /etc/hosts
+echo "10.2.2.11 compute" >> /etc/hosts
+echo "10.2.2.12 block" >> /etc/hosts
+echo "10.2.2.13 object0" >> /etc/hosts
+echo "10.2.2.14 object1" >> /etc/hosts
+
+### NTP ###
+yum -y install chrony
+systemctl enable chronyd.service
+systemctl start chronyd.service
+chronyc sources
+timedatectl set-timezone Asia/Jakarta
+timedatectl set-ntp true
+
+### Repo & Packages ###
+yum -y update
+yum -y install python-openstackclient openstack-selinux
+reboot
+
+
+  ###################################################################
+############ Eksekusi Konfigurasi Swift di Node Controller ##########
+  ###################################################################
+
+########## Swift ##########
+yum -y install xfsprogs rsync
+mkfs.xfs /dev/vdb
+mkfs.xfs /dev/vdc
+mkdir -p /srv/node/vdb
+mkdir -p /srv/node/vdc
+echo "/dev/vdb /srv/node/vdb xfs noatime,nodiratime,nobarrier,logbufs=8 0 2" >> /etc/fstab
+echo "/dev/vdc /srv/node/vdc xfs noatime,nodiratime,nobarrier,logbufs=8 0 2" >> /etc/fstab
+mount /srv/node/vdb
+mount /srv/node/vdc
+[ ! -f /etc/rsyncd.conf.orig ] && cp -v /etc/rsyncd.conf /etc/rsyncd.conf.orig
+curl -o /etc/rsyncd.conf http://10.2.2.250/training/osa1/pod1/object0/etc/rsyncd.conf
+systemctl enable rsyncd.service
+systemctl start rsyncd.service
+yum -y install openstack-swift-account openstack-swift-container openstack-swift-object
+[ ! -f /etc/swift/account-server.conf.orig ] && cp -v /etc/swift/account-server.conf /etc/swift/account-server.conf.orig
+curl -o /etc/swift/account-server.conf http://10.2.2.250/training/osa1/pod1/object0/etc/swift/account-server.conf
+[ ! -f /etc/swift/container-server.conf.orig ] && cp -v /etc/swift/container-server.conf /etc/swift/container-server.conf.orig
+curl -o /etc/swift/container-server.conf http://10.2.2.250/training/osa1/pod1/object0/etc/swift/container-server.conf
+[ ! -f /etc/swift/object-server.conf.orig ] && cp -v /etc/swift/object-server.conf /etc/swift/object-server.conf.orig
+curl -o /etc/swift/object-server.conf http://10.2.2.250/training/osa1/pod1/object0/etc/swift/object-server.conf
+chown -R swift:swift /srv/node
+mkdir -p /var/cache/swift
+chown -R root:swift /var/cache/swift
+chmod -R 775 /var/cache/swift
+chcon -R system_u:object_r:swift_data_t:s0 /srv/node
